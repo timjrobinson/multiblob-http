@@ -20,12 +20,17 @@ function headers(res, hash) {
   res.setHeader('accept-ranges', 'bytes')
 }
 
+function log() {
+  console.log.apply(console, Array.from(arguments))
+}
+
 //host blobs
 module.exports = function (blobs, url, opts) {
   opts = opts || {}
   return function (req, res, next) {
-
+    log('multiblob-http', req.url)
     next = next || function (err) {
+      log('next', err.message)
       res.writeHead(404, {'Content-Type': 'application/json'})
       res.end(JSON.stringify({error: true, status: 404}))
     }
@@ -43,11 +48,14 @@ module.exports = function (blobs, url, opts) {
       var u = URL.parse('http://makeurlparseright.com'+req.url)
       var hash = decodeURIComponent(u.pathname.substring((url+'/get/').length))
       var q = qs.parse(u.query)
-
+      
+      log(req.method, req.url)
+      log(req.method, 'blob', hash)
 
       //if a browser revalidates, just tell them it hasn't changed, the hash has not changed.
       if(req.headers['if-none-match'] === hash) {
         headers(res, hash)
+        log(304, 'not changed')
         return res.writeHead(304), res.end()
       }
 
@@ -60,8 +68,14 @@ module.exports = function (blobs, url, opts) {
       res.setTimeout(0)
 
       blobs.size(hash, function (err, size) {
-        if(err) return next(err)
-        if(!size) return next(new Error('no blob:'+hash))
+        if(err) {
+          log('Failed to get blob size', err.message)
+          return next(err)
+        }
+        if(!size) {
+          log('blob has size 0')
+          return next(new Error('no blob:'+hash))
+        }
 
         headers(res, hash)
 
@@ -69,9 +83,11 @@ module.exports = function (blobs, url, opts) {
         var ranges = req.headers.range && parseRange(size, req.headers.range)
         if (ranges == -2) {
           // bad request
+          log(400, 'bad range request')
           return res.writeHead(400), res.end()
         } else if (ranges == -1) {
-          // Unsadisfiable range
+          // Unsatisfiable range
+          log(416, 'unsatisfiable request')
           res.setHeader('content-range', 'bytes */' + size)
           return res.writeHead(416), res.end()
         }
@@ -107,11 +123,13 @@ module.exports = function (blobs, url, opts) {
         }
 
         if(req.method === 'HEAD') {
+          log('200')
           res.writeHead(200)
           return res.end()
         }
 
         if (!ranges) {
+          log(200,'streaming blob ...')
           res.writeHead(200)
           pull(
             blobs.get(hash),
@@ -123,6 +141,7 @@ module.exports = function (blobs, url, opts) {
             toPull(res)
           )
         } else if (ranges.length == 1) {
+          log(200,'single range')
           res.writeHead(206)
           pull(
             blobs.getSlice({hash, start: ranges[0].start, end: ranges[0].end + 1}),
@@ -143,6 +162,7 @@ module.exports = function (blobs, url, opts) {
           let contentLength = ranges.reduce( (a, r)=> a + r.end - r.start + 1, 0)
           contentLength += multipart_headers.reduce( (a, h) => a + h.length, 0)
           res.setHeader('Content-Length', contentLength)
+          log(200, 'multi-part')
           res.writeHead(206)
           pull(
             many([
